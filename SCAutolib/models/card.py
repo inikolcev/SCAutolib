@@ -10,9 +10,13 @@ from SCAutolib import run, logger
 class Card:
     uri: str = None
     user = None  # FIXME: add user type when it would be ready
+    _private_key: Path = None
+    _cert: Path = None
 
     def __int__(self, cert: Path, key: Path, user):
         self.user = user
+        self._private_key = key
+        self._cert = cert
 
     def _set_uri(self): ...
 
@@ -25,7 +29,8 @@ class Card:
 
 class VirtualCard(Card):
     softhsm2_conf: Path = None
-    _service_name = None
+    _service_name: str = None
+    _softhsm_conf: Path = None
 
     def __int__(self, cert: Path, key: Path, user, insert: bool = False):
         """
@@ -46,6 +51,8 @@ class VirtualCard(Card):
         super(Card, self).__init__(cert, key, user)
         self._service_name = f"virt_cacard_{self.user.username}"
         self._insert = insert
+        self._softhsm_conf = self.user.card_dir.joinpath("conf",
+                                                         "softhsm2.conf")
 
     def __enter__(self):
         """
@@ -92,4 +99,19 @@ class VirtualCard(Card):
         logger.info(f"Smart card {self._service_name} is removed")
         return out
 
-    def enroll(self): ...
+    def enroll(self):
+        cmd = ["pkcs11-tool", "--module", "libsofthsm2.so", "--slot-index",
+               0, "-w", self._private_key, "-y", "privkey", "--label",
+               f"'{self.user.username}'", "-p", self.user.pin, "--set-id", 0,
+               "-d", 0]
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm_conf})
+        logger.debug(
+            f"User key {self._private_key} is added to virtual smart card")
+
+        cmd = ['pkcs11-tool', '--module', 'libsofthsm2.so', '--slot-index', 0,
+               '-w', self._cert, '-y', 'cert', '-p', self.user.pin,
+               '--label', f"'{self.user.username}'", '--set-id', 0, '-d', 0]
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm_conf})
+
+        logger.debug(
+            f"User certificate {self._cert} is added to virtual smart card")
