@@ -1,64 +1,60 @@
+"""
+This module implements classes for communication with different types of cards
+that we are using in the library. Those types are: virtual smart card, real
+(physical) smart card in standard reader, cards in the removinator.
+"""
+
 import time
 from pathlib import Path
-from shutil import rmtree, copy
+from shutil import copy
 from traceback import format_exc
 
 from SCAutolib import run, logger, TEMPLATES_DIR
 
 
 class Card:
+    """
+    Interface for child classes. All child classes will rewrite common methods+
+    based on the type of the card.
+    """
     uri: str = None
     user = None  # FIXME: add user type when it would be ready
     _private_key: Path = None
     _cert: Path = None
 
     def __int__(self, cert: Path, key: Path, user):
-        self.user = user
-        self._private_key = key
-        self._cert = cert
+        ...
 
     def _set_uri(self):
         ...
 
     def insert(self):
+        """
+        Insert the card.
+        """
         ...
 
     def remove(self):
+        """
+        Remove the card.
+        """
         ...
 
     def enroll(self):
+        """
+        Enroll the card (upload a certificate and a key on it)
+        """
         ...
-
-
-def general_steps():
-    """
-    TODO: where this step should be?
-    :return:
-    """
-    with open("/usr/lib/systemd/system/pcscd.service", "r+") as f:
-        data = f.read().replace("--auto-exit", "")
-        f.write(data)
-
-    with open("/usr/share/p11-kit/modules/opensc.module", "r+") as f:
-        data = f.read()
-        if "disable-in: virt_cacard" not in data:
-            f.write("disable-in: virt_cacard\n")
-            logger.debug("opensc.module is updated")
-
-    run(['systemctl', 'stop', 'pcscd.service', 'pcscd.socket', 'sssd'])
-    rmtree("/var/lib/sss/mc/*", ignore_errors=True)
-    rmtree("/var/lib/sss/db/*", ignore_errors=True)
-    logger.debug(
-        "Directories /var/lib/sss/mc/ and /var/lib/sss/db/ removed")
-
-    run("systemctl daemon-reload")
-    run("systemctl restart pcscd sssd")
 
 
 class VirtualCard(Card):
     """
-    TODO: where are all directories for virtual card (for config file, for NSS)
-    TODO: should be created?
+    This class provides method for manipulating with virtual smart card. Virtual
+    smart card by itself is represented by the systemd service in the system
+    The card corresponds to some user, so providing the user is essential for
+    correct functioning of methods for the virtual smart card.
+
+    Card root directory has to be created before calling any method
     """
 
     _service_name: str = None
@@ -77,17 +73,23 @@ class VirtualCard(Card):
         :param key: Path to private key for this card
         :type key: pathlib.Path
         :param user: User of this card
-        :type user: dict
+        :type user: User
         :param insert: If the card should be inserted on entering the context
             manger. Default False.
         :type insert: bool
         :return:
         """
-        super(Card, self).__init__(cert, key, user)
+        self.user = user
+        assert self.user.card_dir.exists(), "Card root directory doesn't exists"
+
+        self._private_key = key
+        self._cert = cert
+
         self._service_name = f"virt_cacard_{self.user.username}"
         self._insert = insert
-        self._softhsm2_conf = self.user.card_dir.joinpath("conf",
-                                                          "softhsm2.conf")
+        # self._softhsm2_conf = SoftHSM2Conf(
+        #   self.user.card_dir.joinpath("softhsm2.conf"))
+        # self._softhsm2_conf = self.user.card_dir.joinpath("softhsm2.conf")
         self._nssdb = self.user.card_dir.joinpath("db")
         self._service_location = Path(
             f"/etc/systemd/system/{self._service_name}")
@@ -138,7 +140,7 @@ class VirtualCard(Card):
 
     def remove(self):
         """
-        Remove virtual smart card by stopping corresponding service.
+        Remove the virtual card by stopping the service
         """
         cmd = ["systemctl", "stop", self._service_name]
         out = run(cmd, check=True)
@@ -159,28 +161,65 @@ class VirtualCard(Card):
                '-w', self._cert, '-y', 'cert', '-p', self.user.pin,
                '--label', f"'{self.user.username}'", '--set-id', 0, '-d', 0]
         run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf})
-
         logger.debug(
             f"User certificate {self._cert} is added to virtual smart card")
 
     def create(self):
+        """
+        Creates SoftHSM2 token and systemd service for virtual smart card.
+        Directory for NSS database is created in this method as separate DB is
+        required for each virtual card.
+        """
+
+        assert self._softhsm2_conf is not None
+
         p11lib = "/usr/lib64/pkcs11/libsofthsm2.so"
+        # Initialize SoftHSM2 token. An error would be raised if token with same
+        # label would be created.
         cmd = ["softhsm2-util", "--init-token", "--free", "--label",
                self.user.username, "--so-pin", "12345678",
                "--pin", self.user.pin]
-        run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf})
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf}, check=True)
         logger.debug(
             f"SoftHSM token is initialized with label '{self.user.username}'")
 
-        assert self._nssdb.exists()
+        # Initialize NSS db
+        self._nssdb.mkdir(exist_ok=True)
         run(f"modutil -create -dbdir sql:{self._nssdb} -force", check=True)
         logger.debug(f"NSS database is initialized in {self._nssdb}")
+
         out = run(f"modutil -list -dbdir sql:{self._nssdb}")
         if "library name: p11-kit-proxy.so" not in out.stdout:
             run(["modutil", "-force", "-add", 'SoftHSM PKCS#11', "-dbdir",
                  f"sql:{self._nssdb}", "-libfile", p11lib])
             logger.debug("SoftHSM support is added to NSS database")
 
+        # Create systemd service
         copy(self._template, self._service_location)
-
+        with self._service_location.open("r+") as f:
+            content = f.read().format(username=self.user.username,
+                                      softhsm2_conf_path=self._softhsm2_conf,
+                                      card_dir=self.user.card_dir)
+            f.write(content)
         run("systemctl daemon-reload")
+
+# TODO: This steps should be done in the Controller
+# def general_steps():
+#     with open("/usr/lib/systemd/system/pcscd.service", "r+") as f:
+#         data = f.read().replace("--auto-exit", "")
+#         f.write(data)
+#
+#     with open("/usr/share/p11-kit/modules/opensc.module", "r+") as f:
+#         data = f.read()
+#         if "disable-in: virt_cacard" not in data:
+#             f.write("disable-in: virt_cacard\n")
+#             logger.debug("opensc.module is updated")
+#
+#     run(['systemctl', 'stop', 'pcscd.service', 'pcscd.socket', 'sssd'])
+#     rmtree("/var/lib/sss/mc/*", ignore_errors=True)
+#     rmtree("/var/lib/sss/db/*", ignore_errors=True)
+#     logger.debug(
+#         "Directories /var/lib/sss/mc/ and /var/lib/sss/db/ removed")
+#
+#     run("systemctl daemon-reload")
+#     run("systemctl restart pcscd sssd")
