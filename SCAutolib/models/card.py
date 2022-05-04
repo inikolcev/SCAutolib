@@ -1,10 +1,9 @@
+import time
+from pathlib import Path
+from shutil import rmtree, copy
 from traceback import format_exc
 
-import time
-
-from pathlib import Path
-
-from SCAutolib import run, logger
+from SCAutolib import run, logger, TEMPLATES_DIR
 
 
 class Card:
@@ -18,19 +17,55 @@ class Card:
         self._private_key = key
         self._cert = cert
 
-    def _set_uri(self): ...
+    def _set_uri(self):
+        ...
 
-    def insert(self): ...
+    def insert(self):
+        ...
 
-    def remove(self): ...
+    def remove(self):
+        ...
 
-    def enroll(self): ...
+    def enroll(self):
+        ...
+
+
+def general_steps():
+    """
+    TODO: where this step should be?
+    :return:
+    """
+    with open("/usr/lib/systemd/system/pcscd.service", "r+") as f:
+        data = f.read().replace("--auto-exit", "")
+        f.write(data)
+
+    with open("/usr/share/p11-kit/modules/opensc.module", "r+") as f:
+        data = f.read()
+        if "disable-in: virt_cacard" not in data:
+            f.write("disable-in: virt_cacard\n")
+            logger.debug("opensc.module is updated")
+
+    run(['systemctl', 'stop', 'pcscd.service', 'pcscd.socket', 'sssd'])
+    rmtree("/var/lib/sss/mc/*", ignore_errors=True)
+    rmtree("/var/lib/sss/db/*", ignore_errors=True)
+    logger.debug(
+        "Directories /var/lib/sss/mc/ and /var/lib/sss/db/ removed")
+
+    run("systemctl daemon-reload")
+    run("systemctl restart pcscd sssd")
 
 
 class VirtualCard(Card):
-    softhsm2_conf: Path = None
+    """
+    TODO: where are all directories for virtual card (for config file, for NSS)
+    TODO: should be created?
+    """
+
     _service_name: str = None
-    _softhsm_conf: Path = None
+    _service_location: Path = None
+    _softhsm2_conf: Path = None
+    _nssdb: Path = None
+    _template: Path = Path(TEMPLATES_DIR, "virt_cacard.service")
 
     def __int__(self, cert: Path, key: Path, user, insert: bool = False):
         """
@@ -51,8 +86,11 @@ class VirtualCard(Card):
         super(Card, self).__init__(cert, key, user)
         self._service_name = f"virt_cacard_{self.user.username}"
         self._insert = insert
-        self._softhsm_conf = self.user.card_dir.joinpath("conf",
-                                                         "softhsm2.conf")
+        self._softhsm2_conf = self.user.card_dir.joinpath("conf",
+                                                          "softhsm2.conf")
+        self._nssdb = self.user.card_dir.joinpath("db")
+        self._service_location = Path(
+            f"/etc/systemd/system/{self._service_name}")
 
     def __enter__(self):
         """
@@ -79,6 +117,15 @@ class VirtualCard(Card):
             logger.error(format_exc())
         self.remove()
 
+    @property
+    def softhsm2_conf(self):
+        return self._softhsm2_conf
+
+    @softhsm2_conf.setter
+    def softhsm2_conf(self, path: Path):
+        assert path.exists(), "File doesn't exist"
+        self._softhsm2_conf = path
+
     def insert(self):
         """
         Insert virtual smart card by starting the corresponding service.
@@ -104,14 +151,36 @@ class VirtualCard(Card):
                0, "-w", self._private_key, "-y", "privkey", "--label",
                f"'{self.user.username}'", "-p", self.user.pin, "--set-id", 0,
                "-d", 0]
-        run(cmd, env={"SOFTHSM2_CONF": self._softhsm_conf})
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf})
         logger.debug(
             f"User key {self._private_key} is added to virtual smart card")
 
         cmd = ['pkcs11-tool', '--module', 'libsofthsm2.so', '--slot-index', 0,
                '-w', self._cert, '-y', 'cert', '-p', self.user.pin,
                '--label', f"'{self.user.username}'", '--set-id', 0, '-d', 0]
-        run(cmd, env={"SOFTHSM2_CONF": self._softhsm_conf})
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf})
 
         logger.debug(
             f"User certificate {self._cert} is added to virtual smart card")
+
+    def create(self):
+        p11lib = "/usr/lib64/pkcs11/libsofthsm2.so"
+        cmd = ["softhsm2-util", "--init-token", "--free", "--label",
+               self.user.username, "--so-pin", "12345678",
+               "--pin", self.user.pin]
+        run(cmd, env={"SOFTHSM2_CONF": self._softhsm2_conf})
+        logger.debug(
+            f"SoftHSM token is initialized with label '{self.user.username}'")
+
+        assert self._nssdb.exists()
+        run(f"modutil -create -dbdir sql:{self._nssdb} -force", check=True)
+        logger.debug(f"NSS database is initialized in {self._nssdb}")
+        out = run(f"modutil -list -dbdir sql:{self._nssdb}")
+        if "library name: p11-kit-proxy.so" not in out.stdout:
+            run(["modutil", "-force", "-add", 'SoftHSM PKCS#11', "-dbdir",
+                 f"sql:{self._nssdb}", "-libfile", p11lib])
+            logger.debug("SoftHSM support is added to NSS database")
+
+        copy(self._template, self._service_location)
+
+        run("systemctl daemon-reload")
