@@ -3,6 +3,7 @@ This module implements classes for communication with different types of cards
 that we are using in the library. Those types are: virtual smart card, real
 (physical) smart card in standard reader, cards in the removinator.
 """
+import re
 
 import time
 from pathlib import Path
@@ -21,6 +22,9 @@ class Card:
     user = None  # FIXME: add user type when it would be ready
 
     def _set_uri(self):
+        """
+        Sets card URI for the object.
+        """
         ...
 
     def insert(self):
@@ -96,6 +100,8 @@ class VirtualCard(Card):
 
         :return: self
         """
+        assert self._service_location.exists(), \
+            "Service for virtual sc doesn't exists."
         if self._insert:
             self.insert()
         return self
@@ -201,3 +207,17 @@ class VirtualCard(Card):
                                       card_dir=self.user.card_dir)
             f.write(content)
         run("systemctl daemon-reload")
+
+        # To get URI of the card, the card has to be inserted
+        with self:
+            self.insert()
+            self._set_uri()
+
+    def _set_uri(self):
+        cmd = ["p11tool", "--list-token-urls"]
+        out = run(cmd).stdout
+        pattern = r"(pkcs11:model=PKCS%2315%20emulated;" \
+                  r"manufacturer=Common%20Access%20Card;serial=.*)"
+        urls = re.findall(pattern, out)
+        assert len(urls) == 1, "More URLs are matched"
+        self.uri = urls[0]
