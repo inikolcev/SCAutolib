@@ -149,6 +149,10 @@ class VirtualCard(Card):
         return out
 
     def enroll(self):
+        """
+        Upload certificate and private key to the virtual smart card (upload to
+        NSS database) with pkcs11-tool.
+        """
         cmd = ["pkcs11-tool", "--module", "libsofthsm2.so", "--slot-index",
                0, "-w", self._private_key, "-y", "privkey", "--label",
                f"'{self.user.username}'", "-p", self.user.pin, "--set-id", 0,
