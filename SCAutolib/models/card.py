@@ -19,11 +19,6 @@ class Card:
     """
     uri: str = None
     user = None  # FIXME: add user type when it would be ready
-    _private_key: Path = None
-    _cert: Path = None
-
-    def __int__(self, cert: Path, key: Path, user):
-        ...
 
     def _set_uri(self):
         ...
@@ -206,24 +201,3 @@ class VirtualCard(Card):
                                       card_dir=self.user.card_dir)
             f.write(content)
         run("systemctl daemon-reload")
-
-# TODO: This steps should be done in the Controller
-# def general_steps():
-#     with open("/usr/lib/systemd/system/pcscd.service", "r+") as f:
-#         data = f.read().replace("--auto-exit", "")
-#         f.write(data)
-#
-#     with open("/usr/share/p11-kit/modules/opensc.module", "r+") as f:
-#         data = f.read()
-#         if "disable-in: virt_cacard" not in data:
-#             f.write("disable-in: virt_cacard\n")
-#             logger.debug("opensc.module is updated")
-#
-#     run(['systemctl', 'stop', 'pcscd.service', 'pcscd.socket', 'sssd'])
-#     rmtree("/var/lib/sss/mc/*", ignore_errors=True)
-#     rmtree("/var/lib/sss/db/*", ignore_errors=True)
-#     logger.debug(
-#         "Directories /var/lib/sss/mc/ and /var/lib/sss/db/ removed")
-#
-#     run("systemctl daemon-reload")
-#     run("systemctl restart pcscd sssd")
