@@ -355,6 +355,10 @@ class SoftHSM2Conf(File):
         with self._conf_file.open("w") as config:
             config.writelines(self._content)
 
+    @property
+    def conf_path(self):
+        return self._conf_file
+
 
 class OpensslCnf(File):
     """

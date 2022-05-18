@@ -133,9 +133,9 @@ class VirtualCard(Card):
         return self._softhsm2_conf
 
     @softhsm2_conf.setter
-    def softhsm2_conf(self, path: Path):
-        assert path.exists(), "File doesn't exist"
-        self._softhsm2_conf = path
+    def softhsm2_conf(self, conf: SoftHSM2Conf):
+        assert conf.conf_path.exists(), "File doesn't exist"
+        self._softhsm2_conf = conf.conf_path
 
     def insert(self):
         """
