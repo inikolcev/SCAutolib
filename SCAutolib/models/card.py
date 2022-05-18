@@ -11,6 +11,7 @@ from shutil import copy
 from traceback import format_exc
 
 from SCAutolib import run, logger, TEMPLATES_DIR
+from SCAutolib.models.file import SoftHSM2Conf
 
 
 class Card:
@@ -20,12 +21,21 @@ class Card:
     """
     uri: str = None
     user = None  # FIXME: add user type when it would be ready
+    _pattern: str = None
 
     def _set_uri(self):
         """
-        Sets card URI for the object.
+        Sets URI for given smart card. Uri is matched from ``p11tool`` command
+        with regular expression. If URI is not matched, assertion exception
+        would be raised
+
+        :raise: AssertionError
         """
-        ...
+        cmd = ["p11tool", "--list-token-urls"]
+        out = run(cmd).stdout
+        urls = re.findall(self._pattern, out)
+        assert len(urls) == 1, "More URLs are matched"
+        self.uri = urls[0]
 
     def insert(self):
         """
@@ -61,6 +71,8 @@ class VirtualCard(Card):
     _softhsm2_conf: Path = None
     _nssdb: Path = None
     _template: Path = Path(TEMPLATES_DIR, "virt_cacard.service")
+    _pattern = r"(pkcs11:model=PKCS%2315%20emulated;" \
+               r"manufacturer=Common%20Access%20Card;serial=.*)"
 
     def __int__(self, cert: Path, key: Path, user, insert: bool = False):
         """
@@ -76,7 +88,6 @@ class VirtualCard(Card):
         :param insert: If the card should be inserted on entering the context
             manger. Default False.
         :type insert: bool
-        :return:
         """
         self.user = user
         assert self.user.card_dir.exists(), "Card root directory doesn't exists"
@@ -86,9 +97,6 @@ class VirtualCard(Card):
 
         self._service_name = f"virt_cacard_{self.user.username}"
         self._insert = insert
-        # self._softhsm2_conf = SoftHSM2Conf(
-        #   self.user.card_dir.joinpath("softhsm2.conf"))
-        # self._softhsm2_conf = self.user.card_dir.joinpath("softhsm2.conf")
         self._nssdb = self.user.card_dir.joinpath("db")
         self._service_location = Path(
             f"/etc/systemd/system/{self._service_name}")
@@ -212,12 +220,3 @@ class VirtualCard(Card):
         with self:
             self.insert()
             self._set_uri()
-
-    def _set_uri(self):
-        cmd = ["p11tool", "--list-token-urls"]
-        out = run(cmd).stdout
-        pattern = r"(pkcs11:model=PKCS%2315%20emulated;" \
-                  r"manufacturer=Common%20Access%20Card;serial=.*)"
-        urls = re.findall(pattern, out)
-        assert len(urls) == 1, "More URLs are matched"
-        self.uri = urls[0]
